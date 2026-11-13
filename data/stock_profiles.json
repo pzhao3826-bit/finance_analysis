@@ -1,0 +1,20 @@
+{
+  "sh.601689": {
+    "published": "2026-08-28",
+    "business": "为汽车厂商提供零部件，产品包括内饰功能件、轻量化底盘、热管理和汽车电子。",
+    "themes": ["汽车零部件", "新能源汽车供应链"],
+    "url": "https://static.cninfo.com.cn/finalpage/2026-08-28/1225521853.PDF"
+  },
+  "sh.603296": {
+    "published": "2026-08-26",
+    "business": "提供电子产品研发、设计和制造服务，业务覆盖消费电子、数据中心和汽车电子。",
+    "themes": ["消费电子代工", "数据中心设备", "汽车电子"],
+    "url": "https://static.cninfo.com.cn/finalpage/2026-08-26/1225502465.PDF"
+  },
+  "sh.688041": {
+    "published": "2026-08-14",
+    "business": "研发和销售高性能处理器，产品包括通用处理器 CPU 和加速处理器 DCU。",
+    "themes": ["集成电路设计", "国产算力"],
+    "url": "https://static.cninfo.com.cn/finalpage/2026-08-14/1225472510.PDF"
+  }
+}

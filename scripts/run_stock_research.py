@@ -117,8 +117,31 @@ def collect_evidence(candidates, cutoff, digest, *, online):
     return {"schema": 1, "snapshot_sha256": digest, "source": "巨潮资讯", "entries": entries}
 
 
+def short_term_profiles(board, day):
+    profiles = json.loads((ROOT / "data" / "stock_profiles.json").read_text(encoding="utf-8"))
+    # Company sources provide a publication date. Use only dates before the research day.
+    return {row["code"]: profiles[row["code"]] for row in board
+            if row["code"] in profiles and profiles[row["code"]]["published"] < day}
+
+
+def listing_board(code):
+    market, symbol = code.split(".")
+    if market == "sh":
+        return "沪市科创板" if symbol.startswith(("688", "689")) else "沪市主板"
+    return "深市创业板" if symbol.startswith(("300", "301")) else "深市主板"
+
+
+def selection_reason(row):
+    scores = row["contributions"]
+    return (f"5 日超额 {row['excess5']:+.2f} 个百分点（{scores['excess5']:.2f} 分），"
+            f"20 日超额 {row['excess20']:+.2f} 个百分点（{scores['excess20']:.2f} 分），"
+            f"成交额 {row['amount'] / 1e8:.2f} 亿元，为前 20 日中位数的 "
+            f"{row['amount_ratio']:.2f} 倍（{scores['amount_ratio']:.2f} 分）。")
+
+
 def render_short_term(day, result, evidence):
     board = result["board"]
+    profiles = evidence.get("profiles", {})
     state = "已生成" if board else "无符合条件的候选" if result["complete"] else "行情覆盖不足，暂缓发布"
     lines = [f"# A 股短线潜力 · {day}", "",
              f"- **状态**｜{state}。当日行情覆盖 {result['covered']}/300，符合条件 {result['eligible']} 只。",
@@ -127,29 +150,47 @@ def render_short_term(day, result, evidence):
              f"- **快照**｜SHA-256 `{evidence['snapshot_sha256']}`。", "",
              "## Top 3 · 优先复核", ""]
     for rank, row in enumerate(board[:3], 1):
-        lines.append(f"{rank}. **{markdown(row['name'])}**（{row['code']}），{row['score']:.2f} 分，"
-                     f"近 5 日跑赢指数 {row['excess5']:.2f} 个百分点，成交额为过去 20 日中位数的 {row['amount_ratio']:.2f} 倍。")
+        industry = row["industry"]
+        lines.extend([f"### {rank}. {markdown(row['name'])}（{row['code']}）· {row['score']:.2f} 分", "",
+                      f"- **行业与上市板块**｜{markdown(industry.get('industry') or '暂无行业数据')} · {listing_board(row['code'])}。",
+                      f"- **行情与估值**｜收盘 {row['close']:.2f} 元，当日 {row['move']:+.2f}%。PE TTM {metric(row['pe'])}，PB {metric(row['pb'])}。",
+                      f"- **入围理由**｜{selection_reason(row)}"])
+        profile = profiles.get(row["code"])
+        if profile:
+            themes = "、".join(markdown(theme) for theme in profile["themes"])
+            lines.append(f"- **主营与业务主题**｜{markdown(profile['business'])} 主题为{themes}。 "
+                         f"[公司披露 {profile['published']}]({profile['url']})")
         item = evidence["entries"].get(row["code"])
         if item and item["items"]:
-            for announcement in item["items"][:2]:
+            lines.append("- **近期公告**")
+            for announcement in item["items"][:3]:
                 title = markdown(announcement["title"]).replace("[", "&#91;").replace("]", "&#93;")
-                lines.append(f"   - {announcement['published_at'][:10]} [{title}]({announcement['url']})")
+                lines.append(f"  - {announcement['published_at'][:10]} [{title}]({announcement['url']})")
         else:
             detail = (item["error"] or "窗口内无匹配公告") if item else "本次未查询公告"
-            lines.append(f"   - 公告待复核。{markdown(detail)}。")
+            lines.append(f"- **公告待复核**｜{markdown(detail)}。")
+        if row["move"] < 0:
+            check = "当日收跌，次日先看能否站回开盘价及开盘后的成交量加权均价。"
+        elif row["amount_ratio"] < 1:
+            check = "当日成交额低于近 20 日中位数，次日核对同时间段成交是否跟上。"
+        else:
+            check = "次日核对跳空幅度，以及首 15 分钟能否继续跑赢沪深 300。"
+        lines.extend([f"- **次日复核重点**｜{check}", ""])
     lines.extend(["", "## Top 10 · 短线观察", ""])
     if board:
-        lines.extend(["| 排名 | 代码 | 名称 | 得分 | 收盘价 | 当日涨跌 | 5 日超额 | 20 日超额 | 成交额倍数 |",
-                      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"])
+        lines.extend(["| 排名 | 股票 | 行业 | 上市板块 | 得分 | 入围理由与分项贡献 |",
+                      "| --- | --- | --- | --- | --- | --- |"])
         for rank, row in enumerate(board, 1):
-            lines.append(f"| {rank} | {row['code']} | {markdown(row['name'])} | {row['score']:.2f} | "
-                         f"{row['close']:.2f} | {row['move']:+.2f}% | {row['excess5']:+.2f} pp | "
-                         f"{row['excess20']:+.2f} pp | {row['amount_ratio']:.2f}× |")
+            industry = markdown(row["industry"].get("industry") or "暂无")
+            lines.append(f"| {rank} | {markdown(row['name'])} {row['code']} | {industry} | "
+                         f"{listing_board(row['code'])} | {row['score']:.2f} | {selection_reason(row)} "
+                         f"收盘 {row['close']:.2f} 元，当日 {row['move']:+.2f}%。 |")
     else:
         lines.append("本期无可发布名单。")
     lines.extend(["", f"按近 5 日超额 {WEIGHTS['excess5']:.0%}、近 20 日超额 {WEIGHTS['excess20']:.0%}、"
                   f"成交额倍数 {WEIGHTS['amount_ratio']:.0%} 加权。排除停牌、ST、成交额低于 1 亿元、"
                   f"当日涨跌绝对值达到 {MAX_DAILY_MOVE}% 或近期数据不完整的标的。",
+                  "", "行业采用当期 BaoStock 快照，上市板块按证券代码标注。业务主题依据公司披露整理，资料缺失时省略。",
                   "", "得分为当日候选的相对排名。下一交易日结合实时开盘、停复牌、涨跌停及新增公告复核可成交性。"])
     return "\n".join(lines) + "\n"
 
@@ -267,6 +308,8 @@ def run(args):
         else:
             evidence_rows = candidates if args.short_term else [row for row, _ in candidates]
             evidence = collect_evidence(evidence_rows, cutoff, digest, online=not (args.snapshot or args.no_announcements))
+            if args.short_term and not args.snapshot:
+                evidence["profiles"] = short_term_profiles(candidates, day)
         save_json(staging / "evidence.json", evidence)
         if args.short_term:
             (staging / "short-term.md").write_text(render_short_term(day, result, evidence), encoding="utf-8")

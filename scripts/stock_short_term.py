@@ -39,8 +39,14 @@ def features(stock, days, benchmark5, benchmark20):
     excess20 = (math.prod(changes[-20:]) - 1) * 100 - benchmark20
     if excess5 <= 0 or excess20 <= 0:
         return True, None
+    baseline = median(prior_amounts)
+    industry = stock.get("industry") or {}
+    if not (industry.get("updateDate") and industry["updateDate"] <= days[-1]):
+        industry = {}
     return True, {"code": code, "name": stock["name"], "close": close, "move": move,
-                  "excess5": excess5, "excess20": excess20, "amount_ratio": amount / median(prior_amounts)}
+                  "industry": industry, "amount": amount, "baseline_amount": baseline,
+                  "pe": number(today.get("peTTM")), "pb": number(today.get("pbMRQ")),
+                  "excess5": excess5, "excess20": excess20, "amount_ratio": amount / baseline}
 
 
 def rank_short_term(snapshot):
@@ -60,13 +66,14 @@ def rank_short_term(snapshot):
     board = []
     if complete and eligible:
         for row in eligible:
-            score = 0
+            contributions = {}
             for factor, weight in WEIGHTS.items():
                 below = sum(peer[factor] < row[factor] for peer in eligible)
                 tied = sum(peer[factor] == row[factor] for peer in eligible)
                 percentile = (below + (tied - 1) / 2) / (len(eligible) - 1) if len(eligible) > 1 else 0.5
-                score += weight * percentile
-            board.append({**row, "score": round(100 * score, 8)})
+                contributions[factor] = weight * percentile
+            board.append({**row, "score": round(100 * sum(contributions.values()), 8),
+                          "contributions": {factor: 100 * value for factor, value in contributions.items()}})
         board.sort(key=lambda row: (-row["score"], -row["excess5"], row["code"]))
     return {"complete": complete, "covered": covered, "eligible": len(eligible),
             "benchmark5": benchmark5, "benchmark20": benchmark20, "board": board[:10]}
