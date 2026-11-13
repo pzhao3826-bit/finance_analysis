@@ -1,4 +1,4 @@
-"""Collect or replay a weekly CSI 300 screen and prepare its review packet."""
+"""Collect or replay CSI 300 research snapshots and prepare candidate reports."""
 
 import argparse
 import hashlib
@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from stock_screen import (
     MIN_COVERAGE, MIN_FACTOR_COVERAGE, RULES_VERSION, STRATEGIES, direction_exclusion, screen, shortlist,
 )
+from stock_short_term import MAX_DAILY_MOVE, VERSION as SHORT_VERSION, WEIGHTS, rank_short_term
 from stock_sources import CHINA, CNINFO_SEARCH, SOURCE_ERRORS, announcement_index, announcements, collect, save_json
 
 
@@ -104,7 +105,7 @@ def collect_evidence(candidates, cutoff, digest, *, online):
             organizations, source_error = {}, str(exc)
         else:
             source_error = None
-        for row, _ in candidates:
+        for row in candidates:
             code = row["code"]
             try:
                 if source_error:
@@ -114,6 +115,43 @@ def collect_evidence(candidates, cutoff, digest, *, online):
             except SOURCE_ERRORS as exc:
                 entries[code] = {"items": [], "error": str(exc)}
     return {"schema": 1, "snapshot_sha256": digest, "source": "巨潮资讯", "entries": entries}
+
+
+def render_short_term(day, result, evidence):
+    board = result["board"]
+    state = "已生成" if board else "无符合条件的候选" if result["complete"] else "行情覆盖不足，暂缓发布"
+    lines = [f"# A 股短线潜力 · {day}", "",
+             f"- **状态**｜{state}。当日行情覆盖 {result['covered']}/300，符合条件 {result['eligible']} 只。",
+             f"- **市场**｜沪深 300 近 5 日 {result['benchmark5']:+.2f}%，近 20 日 {result['benchmark20']:+.2f}%。",
+             f"- **口径**｜规则 {SHORT_VERSION}，北京时间 {day} 18:00 截止，观察后续 2–5 个交易日。",
+             f"- **快照**｜SHA-256 `{evidence['snapshot_sha256']}`。", "",
+             "## Top 3 · 优先复核", ""]
+    for rank, row in enumerate(board[:3], 1):
+        lines.append(f"{rank}. **{markdown(row['name'])}**（{row['code']}），{row['score']:.2f} 分，"
+                     f"近 5 日跑赢指数 {row['excess5']:.2f} 个百分点，成交额为过去 20 日中位数的 {row['amount_ratio']:.2f} 倍。")
+        item = evidence["entries"].get(row["code"])
+        if item and item["items"]:
+            for announcement in item["items"][:2]:
+                title = markdown(announcement["title"]).replace("[", "&#91;").replace("]", "&#93;")
+                lines.append(f"   - {announcement['published_at'][:10]} [{title}]({announcement['url']})")
+        else:
+            detail = (item["error"] or "窗口内无匹配公告") if item else "本次未查询公告"
+            lines.append(f"   - 公告待复核。{markdown(detail)}。")
+    lines.extend(["", "## Top 10 · 短线观察", ""])
+    if board:
+        lines.extend(["| 排名 | 代码 | 名称 | 得分 | 收盘价 | 当日涨跌 | 5 日超额 | 20 日超额 | 成交额倍数 |",
+                      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"])
+        for rank, row in enumerate(board, 1):
+            lines.append(f"| {rank} | {row['code']} | {markdown(row['name'])} | {row['score']:.2f} | "
+                         f"{row['close']:.2f} | {row['move']:+.2f}% | {row['excess5']:+.2f} pp | "
+                         f"{row['excess20']:+.2f} pp | {row['amount_ratio']:.2f}× |")
+    else:
+        lines.append("本期无可发布名单。")
+    lines.extend(["", f"按近 5 日超额 {WEIGHTS['excess5']:.0%}、近 20 日超额 {WEIGHTS['excess20']:.0%}、"
+                  f"成交额倍数 {WEIGHTS['amount_ratio']:.0%} 加权。排除停牌、ST、成交额低于 1 亿元、"
+                  f"当日涨跌绝对值达到 {MAX_DAILY_MOVE}% 或近期数据不完整的标的。",
+                  "", "得分为当日候选的相对排名。下一交易日结合实时开盘、停复牌、涨跌停及新增公告复核可成交性。"])
+    return "\n".join(lines) + "\n"
 
 
 def render_review(day, candidates, evidence, complete):
@@ -160,8 +198,13 @@ def arguments(argv):
     parser.add_argument("--refresh", action="store_true", help="重新取数，跳过同日取数缓存")
     parser.add_argument("--evidence", type=Path, help="离线重跑时同时复用 evidence.json")
     parser.add_argument("--no-announcements", action="store_true", help="在线采集时跳过公告请求")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "records" / "stocks", help="每期目录的父目录")
+    parser.add_argument("--short-term", action="store_true", help="运行日频短线潜力 Top 3 和 Top 10")
+    parser.add_argument("--output-dir", type=Path, help="每期目录的父目录")
     args = parser.parse_args(argv)
+    if args.output_dir is None:
+        args.output_dir = ROOT / "records" / "stocks"
+        if args.short_term:
+            args.output_dir /= "short-term"
     if args.snapshot and args.refresh:
         parser.error("--refresh 仅用于在线采集")
     if args.evidence and not args.snapshot:
@@ -173,6 +216,11 @@ def run(args):
     now = datetime.now(CHINA)
     if args.as_of and args.as_of > now.date():
         raise ValueError("研究日期不能晚于今天")
+    if args.short_term and not args.as_of and not args.snapshot:
+        existing = args.output_dir / now.date().isoformat() / "short-term.md"
+        if existing.is_file():
+            print(existing.resolve())
+            return 2 if "行情覆盖不足，暂缓发布" in existing.read_text(encoding="utf-8") else 0
     if args.as_of and (args.output_dir / args.as_of.isoformat()).exists():
         raise FileExistsError("已有该研究日期的记录。请用 --output-dir 指定另一目录重跑。")
     if args.snapshot:
@@ -189,17 +237,24 @@ def run(args):
             raise RuntimeError(f"BaoStock 登录失败 [{login.error_code}] {login.error_msg}")
         try:
             snapshot = collect(bao, args.as_of, ROOT / "data" / "stocks" / "cache", refresh=args.refresh, now=now,
+                               short_term=args.short_term,
                                progress=lambda message: print(message, flush=True))
         finally:
             bao.logout()
 
-    result = screen(snapshot)
+    if snapshot is None:
+        print(f"{now.date()} 非交易日，跳过短线筛选。")
+        return 0
+    result = rank_short_term(snapshot) if args.short_term else screen(snapshot)
     day = snapshot["as_of"]
     args.output_dir.mkdir(parents=True, exist_ok=True)
     destination = args.output_dir / day
     if destination.exists():
         raise FileExistsError(f"已有研究记录 {destination}。请用 --output-dir 指定另一目录重跑。")
-    candidates = shortlist(result["ranked"]) if result["complete"] else []
+    if args.short_term:
+        candidates = result["board"][:3]
+    else:
+        candidates = shortlist(result["ranked"]) if result["complete"] else []
     cutoff = datetime.combine(date.fromisoformat(day), time(18), CHINA)
     with TemporaryDirectory(prefix=".stock-research-", dir=args.output_dir) as temporary:
         staging = Path(temporary) / day
@@ -210,13 +265,17 @@ def run(args):
             if evidence.get("schema") != 1 or evidence.get("snapshot_sha256") != digest:
                 raise ValueError("证据文件与快照不匹配")
         else:
-            evidence = collect_evidence(candidates, cutoff, digest, online=not (args.snapshot or args.no_announcements))
+            evidence_rows = candidates if args.short_term else [row for row, _ in candidates]
+            evidence = collect_evidence(evidence_rows, cutoff, digest, online=not (args.snapshot or args.no_announcements))
         save_json(staging / "evidence.json", evidence)
-        (staging / "screen.md").write_text(render_screen(snapshot, result, digest), encoding="utf-8")
-        (staging / "review.md").write_text(render_review(day, candidates, evidence, result["complete"]), encoding="utf-8")
+        if args.short_term:
+            (staging / "short-term.md").write_text(render_short_term(day, result, evidence), encoding="utf-8")
+        else:
+            (staging / "screen.md").write_text(render_screen(snapshot, result, digest), encoding="utf-8")
+            (staging / "review.md").write_text(render_review(day, candidates, evidence, result["complete"]), encoding="utf-8")
         # 同一目录内原子发布。并发执行时，已有非空记录目录会让 rename 失败。
         os.rename(staging, destination)
-    print(destination.resolve())
+    print((destination / "short-term.md").resolve() if args.short_term else destination.resolve())
     if not result["complete"]:
         print("数据覆盖不足，已保存诊断记录。", file=sys.stderr)
     return 0 if result["complete"] else 2

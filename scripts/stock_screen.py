@@ -180,7 +180,7 @@ def direction_exclusion(row, fields):
     return None
 
 
-def screen(snapshot):
+def validate_snapshot(snapshot):
     if snapshot.get("schema") != 1 or snapshot.get("source") != "BaoStock":
         raise ValueError("不支持的快照版本或数据源")
     days = snapshot["trading_days"]
@@ -198,6 +198,11 @@ def screen(snapshot):
     closes = [number(benchmark.get(d, {}).get("close")) for d in days]
     if any(close is None or close <= 0 for close in closes):
         raise ValueError("基准指数缺少 60 日有效收盘价")
+    return days, stocks, closes
+
+
+def screen(snapshot):
+    days, stocks, closes = validate_snapshot(snapshot)
     rows = [stock_metrics(stock, days) for stock in sorted(stocks, key=lambda stock: stock["code"])]
     quote_count = sum(row["quote_ok"] for row in rows)
     ranked = {}

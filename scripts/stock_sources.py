@@ -71,7 +71,7 @@ def financial_rows(fetch, query, code, day, count):
     return rows
 
 
-def collect(bao, requested_day, cache_dir, *, refresh=False, now=None, progress=None):
+def collect(bao, requested_day, cache_dir, *, refresh=False, now=None, progress=None, short_term=False):
     now = now or datetime.now(CHINA)
     end = requested_day or now.date()
     start = end - timedelta(days=130)
@@ -82,6 +82,8 @@ def collect(bao, requested_day, cache_dir, *, refresh=False, now=None, progress=
     if len(trading_days) < 60:
         raise ValueError("交易日历不足 60 个交易日")
     day = trading_days[-1]
+    if short_term and requested_day is None and day != end.isoformat():
+        return None
     if requested_day and day != requested_day.isoformat():
         raise ValueError(f"{requested_day} 非交易日，最近交易日为 {day}")
     if day == now.date().isoformat() and now.hour < 18:
@@ -151,7 +153,9 @@ def collect(bao, requested_day, cache_dir, *, refresh=False, now=None, progress=
             bao.query_history_k_data_plus, code, STOCK_FIELDS, trading_days[-21], day,
             frequency="d", adjustflag="3",
         ))
-        active = any(row.get("date") == day and row.get("tradestatus") == "1" and row.get("isST") == "0" for row in bars)
+        active = not short_term and any(
+            row.get("date") == day and row.get("tradestatus") == "1" and row.get("isST") == "0" for row in bars
+        )
         dividends = []
         if active:
             for year in sorted({cutoff.year, (cutoff - timedelta(days=365)).year}):
